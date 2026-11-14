@@ -4,63 +4,58 @@ import re
 import io
 import sqlite3
 from datetime import datetime
+from xml.sax.saxutils import escape
 
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
-
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib import colors
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    PageBreak,
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.units import mm
-from xml.sax.saxutils import escape
 
 
-# =========================================================
+# =====================================================
 # CONFIGURATION
-# =========================================================
+# =====================================================
 
 st.set_page_config(
     page_title="ResearchOS",
     page_icon="🔬",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
 load_dotenv()
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-
 MODEL_NAME = "gemini-3.8-flash"
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "researchos.db")
+DB_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "researchos.db"
+)
 
 
-# =========================================================
+# =====================================================
 # GEMINI CLIENT
-# =========================================================
+# =====================================================
 
 @st.cache_resource
-def get_client():
-    if not API_KEY:
+def get_client(api_key):
+    if not api_key:
         return None
-    return genai.Client(api_key=API_KEY)
+    return genai.Client(api_key=api_key)
 
 
-client = get_client()
+client = get_client(API_KEY)
 
 
-# =========================================================
+# =====================================================
 # DATABASE
-# =========================================================
+# =====================================================
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
@@ -80,10 +75,11 @@ def save_report(topic, report, sources, created_at):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
-            INSERT INTO reports (topic, report, sources, created_at)
+            INSERT INTO reports
+            (topic, report, sources, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (topic, report, "\n".join(sources), created_at),
+            (topic, report, "\n".join(sources), created_at)
         )
         conn.commit()
 
@@ -94,23 +90,28 @@ def get_reports():
         rows = conn.execute(
             "SELECT * FROM reports ORDER BY id DESC"
         ).fetchall()
+
     return [dict(row) for row in rows]
 
 
 def delete_report(report_id):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        conn.execute(
+            "DELETE FROM reports WHERE id = ?",
+            (report_id,)
+        )
         conn.commit()
 
 
 init_db()
 
 
-# =========================================================
+# =====================================================
 # PDF GENERATOR
-# =========================================================
+# =====================================================
 
 def create_pdf(topic, report, sources, created_at):
+
     buffer = io.BytesIO()
 
     doc = SimpleDocTemplate(
@@ -120,7 +121,7 @@ def create_pdf(topic, report, sources, created_at):
         leftMargin=18 * mm,
         topMargin=18 * mm,
         bottomMargin=18 * mm,
-        title=topic,
+        title=topic
     )
 
     styles = getSampleStyleSheet()
@@ -132,7 +133,7 @@ def create_pdf(topic, report, sources, created_at):
         leading=28,
         textColor=colors.HexColor("#243B80"),
         alignment=TA_CENTER,
-        spaceAfter=18,
+        spaceAfter=18
     )
 
     heading_style = ParagraphStyle(
@@ -142,7 +143,7 @@ def create_pdf(topic, report, sources, created_at):
         leading=18,
         textColor=colors.HexColor("#2447A5"),
         spaceBefore=12,
-        spaceAfter=8,
+        spaceAfter=8
     )
 
     body_style = ParagraphStyle(
@@ -150,79 +151,106 @@ def create_pdf(topic, report, sources, created_at):
         parent=styles["BodyText"],
         fontSize=9.5,
         leading=14,
-        spaceAfter=7,
+        spaceAfter=7
     )
 
-    story = []
-
-    story.append(Paragraph("ResearchOS", title_style))
-    story.append(Paragraph(escape(topic), heading_style))
-    story.append(Paragraph(
-        f"Generated: {escape(created_at)}",
-        body_style,
-    ))
-    story.append(Spacer(1, 12))
+    story = [
+        Paragraph("ResearchOS", title_style),
+        Paragraph(escape(topic), heading_style),
+        Paragraph(
+            f"Generated: {escape(created_at)}",
+            body_style
+        ),
+        Spacer(1, 12)
+    ]
 
     for line in report.splitlines():
+
         line = line.strip()
 
         if not line:
             story.append(Spacer(1, 5))
-            continue
 
-        if line.startswith("# "):
+        elif line.startswith("# "):
             story.append(
-                Paragraph(escape(line[2:]), heading_style)
+                Paragraph(
+                    escape(line[2:]),
+                    heading_style
+                )
             )
 
         elif line.startswith("## "):
             story.append(
-                Paragraph(escape(line[3:]), heading_style)
+                Paragraph(
+                    escape(line[3:]),
+                    heading_style
+                )
             )
 
         elif line.startswith("### "):
             story.append(
                 Paragraph(
                     f"<b>{escape(line[4:])}</b>",
-                    body_style,
+                    body_style
                 )
             )
 
-        elif line.startswith("- ") or line.startswith("* "):
+        elif line.startswith(("- ", "* ")):
             story.append(
                 Paragraph(
                     "• " + escape(line[2:]),
-                    body_style,
+                    body_style
                 )
             )
 
         else:
-            clean_line = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
-            clean_line = re.sub(r"\*(.*?)\*", r"\1", clean_line)
-            story.append(Paragraph(escape(clean_line), body_style))
+            clean_line = re.sub(
+                r"\*\*(.*?)\*\*",
+                r"\1",
+                line
+            )
+
+            clean_line = re.sub(
+                r"\*(.*?)\*",
+                r"\1",
+                clean_line
+            )
+
+            story.append(
+                Paragraph(
+                    escape(clean_line),
+                    body_style
+                )
+            )
 
     if sources:
         story.append(Spacer(1, 15))
-        story.append(Paragraph("Sources", heading_style))
+        story.append(
+            Paragraph("Sources", heading_style)
+        )
 
         for index, source in enumerate(sources, 1):
             story.append(
                 Paragraph(
                     f"{index}. {escape(source)}",
-                    body_style,
+                    body_style
                 )
             )
 
     doc.build(story)
+
     buffer.seek(0)
+
     return buffer.getvalue()
 
 
-# =========================================================
-# RESEARCH GENERATION
-# =========================================================
+# =====================================================
+# AI RESEARCH GENERATION
+# Google Search grounding disabled
+# =====================================================
 
 def generate_research(topic, depth, style):
+
     prompt = f"""
 You are ResearchOS, an intelligent AI research assistant.
 
@@ -237,7 +265,8 @@ Writing style:
 
 Create a detailed, useful, well-structured research report.
 
-Include:
+Include these sections:
+
 1. Executive Summary
 2. Introduction
 3. Background and Context
@@ -249,48 +278,31 @@ Include:
 9. Future Scope
 10. Conclusion
 
-Use clear headings and Markdown formatting.
-Explain difficult concepts in understandable language.
-Use factual information and avoid inventing statistics.
-Cite sources or evidence when available.
+Instructions:
+
+- Use clear headings and Markdown formatting.
+- Explain difficult concepts in understandable language.
+- Match the selected research depth and writing style.
+- Use factual information.
+- Avoid inventing statistics.
+- Do not invent citations, URLs, or sources.
+- You do not have live web-search access in this version.
+- Mention when information may need current verification.
 """
 
     response = client.models.generate_content(
         model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[
-                types.Tool(
-                    google_search=types.GoogleSearch()
-                )
-            ]
-        ),
+        contents=prompt
     )
 
     report_text = response.text or "No report generated."
 
-    sources = []
-
-    try:
-        grounding = response.candidates[0].grounding_metadata
-
-        if grounding and grounding.grounding_chunks:
-            for chunk in grounding.grounding_chunks:
-                if chunk.web and chunk.web.uri:
-                    source = chunk.web.uri
-
-                    if source not in sources:
-                        sources.append(source)
-
-    except Exception:
-        pass
-
-    return report_text, sources
+    return report_text, []
 
 
-# =========================================================
+# =====================================================
 # SESSION STATE
-# =========================================================
+# =====================================================
 
 if "current_report" not in st.session_state:
     st.session_state.current_report = None
@@ -299,14 +311,19 @@ if "research_count" not in st.session_state:
     st.session_state.research_count = 0
 
 
-# =========================================================
-# CUSTOM UI
-# =========================================================
+# =====================================================
+# CUSTOM DESIGN
+# =====================================================
 
 st.markdown("""
 <style>
+
 .stApp {
-    background: linear-gradient(135deg, #07111f, #101a2d);
+    background: linear-gradient(
+        135deg,
+        #07111f,
+        #101a2d
+    );
     color: #e8eefc;
 }
 
@@ -318,13 +335,17 @@ section[data-testid="stSidebar"] {
 .hero {
     padding: 28px;
     border-radius: 18px;
-    background: linear-gradient(120deg, #10294c, #17213a);
+    background: linear-gradient(
+        120deg,
+        #10294c,
+        #17213a
+    );
     border: 1px solid #30476b;
     margin-bottom: 25px;
 }
 
 .hero h1 {
-    color: #ffffff;
+    color: white;
     font-size: 36px;
     margin-bottom: 5px;
 }
@@ -362,29 +383,25 @@ div.stButton > button {
     border-radius: 9px;
 }
 
-.report-box {
-    background: #0e192a;
-    border: 1px solid #243854;
-    border-radius: 12px;
-    padding: 18px;
-}
-
 .footer {
     color: #7186a6;
     text-align: center;
     font-size: 12px;
     padding: 20px;
 }
+
 </style>
 """, unsafe_allow_html=True)
 
 
-# =========================================================
+# =====================================================
 # SIDEBAR
-# =========================================================
+# =====================================================
 
 with st.sidebar:
+
     st.markdown("## 🔬 ResearchOS")
+
     st.caption("AI Research Intelligence")
 
     page = st.radio(
@@ -392,8 +409,8 @@ with st.sidebar:
         [
             "Research Workspace",
             "Research History",
-            "About ResearchOS",
-        ],
+            "About ResearchOS"
+        ]
     )
 
     st.divider()
@@ -406,24 +423,32 @@ with st.sidebar:
         st.error("Gemini API key missing")
 
     st.caption(f"Model: {MODEL_NAME}")
+    st.caption("Search grounding: Disabled")
 
 
-# =========================================================
+# =====================================================
 # HEADER
-# =========================================================
+# =====================================================
 
 st.markdown("""
 <div class="hero">
+
     <h1>🔬 ResearchOS</h1>
+
     <p>AI-powered research intelligence workspace</p>
-    <p>Discover insights. Analyze ideas. Generate research reports.</p>
+
+    <p>
+        Discover insights. Analyze ideas.
+        Generate research reports.
+    </p>
+
 </div>
 """, unsafe_allow_html=True)
 
 
-# =========================================================
+# =====================================================
 # RESEARCH WORKSPACE
-# =========================================================
+# =====================================================
 
 if page == "Research Workspace":
 
@@ -440,8 +465,8 @@ if page == "Research Workspace":
     with col2:
         st.markdown("""
         <div class="metric-card">
-            <h2>Web</h2>
-            <p>Google Search Grounding</p>
+            <h2>Knowledge</h2>
+            <p>Gemini AI Analysis</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -460,7 +485,7 @@ if page == "Research Workspace":
     topic = st.text_area(
         "Research topic",
         placeholder="Example: Agentic AI applications in healthcare",
-        height=100,
+        height=100
     )
 
     col1, col2 = st.columns(2)
@@ -471,9 +496,9 @@ if page == "Research Workspace":
             [
                 "Quick Overview",
                 "Standard Research",
-                "Deep Research",
+                "Deep Research"
             ],
-            index=1,
+            index=1
         )
 
     with col2:
@@ -483,14 +508,14 @@ if page == "Research Workspace":
                 "Professional Academic",
                 "Beginner Friendly",
                 "Technical",
-                "Executive Summary",
-            ],
+                "Executive Summary"
+            ]
         )
 
     generate_button = st.button(
         "🚀 Start Research Project",
         type="primary",
-        use_container_width=True,
+        use_container_width=True
     )
 
     if generate_button:
@@ -505,14 +530,17 @@ if page == "Research Workspace":
             st.warning("Please enter a research topic.")
 
         else:
+
             with st.spinner(
                 "ResearchOS is researching your topic..."
             ):
+
                 try:
+
                     report, sources = generate_research(
                         topic.strip(),
                         depth,
-                        style,
+                        style
                     )
 
                     created_at = datetime.now().strftime(
@@ -523,24 +551,25 @@ if page == "Research Workspace":
                         topic.strip(),
                         report,
                         sources,
-                        created_at,
+                        created_at
                     )
 
                     st.session_state.current_report = {
                         "topic": topic.strip(),
                         "report": report,
                         "sources": sources,
-                        "created_at": created_at,
+                        "created_at": created_at
                     }
 
                     st.session_state.research_count += 1
 
                 except Exception as error:
-                    st.error(f"Research failed: {error}")
 
-    # -----------------------------------------------------
+                    st.error(
+                        f"Research failed: {error}"
+                    )
+
     # DISPLAY REPORT
-    # -----------------------------------------------------
 
     current = st.session_state.current_report
 
@@ -549,80 +578,66 @@ if page == "Research Workspace":
         st.divider()
 
         st.subheader("📄 Research Report")
+
         st.caption(
             f"Topic: {current['topic']} | "
             f"Generated: {current['created_at']}"
         )
 
-        st.markdown(
-            current["report"],
-            unsafe_allow_html=False,
+        st.markdown(current["report"])
+
+        st.info(
+            "This report was generated from Gemini's "
+            "learned knowledge. Live Google Search is "
+            "disabled, so verify recent developments "
+            "and important facts independently."
         )
 
-        # -------------------------------------------------
-        # SOURCES
-        # -------------------------------------------------
-
-        if current["sources"]:
-            st.subheader("🔗 Research Sources")
-
-            for index, source in enumerate(
-                current["sources"], 1
-            ):
-                st.markdown(
-                    f"{index}. [{source}]({source})"
-                )
-
-        else:
-            st.info(
-                "Google Search did not return source links "
-                "for this report."
-            )
-
-        # -------------------------------------------------
-        # DOWNLOADS
-        # -------------------------------------------------
-
         st.divider()
+
         st.subheader("📥 Export Your Research")
 
         try:
+
             pdf_data = create_pdf(
                 current["topic"],
                 current["report"],
                 current["sources"],
-                current["created_at"],
+                current["created_at"]
             )
 
             col1, col2 = st.columns(2)
 
             with col1:
+
                 st.download_button(
                     label="📥 Download Markdown",
                     data=current["report"],
                     file_name="ResearchOS_Report.md",
                     mime="text/markdown",
-                    use_container_width=True,
+                    use_container_width=True
                 )
 
             with col2:
+
                 st.download_button(
                     label="📑 Download PDF",
                     data=pdf_data,
                     file_name="ResearchOS_Report.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    use_container_width=True
                 )
 
-            st.success("PDF and Markdown exports are ready.")
-
         except Exception as error:
-            st.error(f"PDF generation error: {error}")
+
+            st.error(
+                f"PDF generation error: {error}"
+            )
 
 
-# =========================================================
+# =====================================================
 # RESEARCH HISTORY
-# =========================================================
+# =====================================================
 
 elif page == "Research History":
 
@@ -631,10 +646,14 @@ elif page == "Research History":
     reports = get_reports()
 
     if not reports:
+
         st.info("No research reports saved yet.")
 
     else:
-        st.caption(f"{len(reports)} saved research projects")
+
+        st.caption(
+            f"{len(reports)} saved research projects"
+        )
 
         for item in reports:
 
@@ -653,21 +672,23 @@ elif page == "Research History":
                 col1, col2 = st.columns(2)
 
                 with col1:
+
                     st.download_button(
                         "📥 Download Markdown",
                         data=item["report"],
                         file_name=f"Research_{item['id']}.md",
                         mime="text/markdown",
                         key=f"md_{item['id']}",
-                        use_container_width=True,
+                        use_container_width=True
                     )
 
                 with col2:
+
                     pdf_data = create_pdf(
                         item["topic"],
                         item["report"],
                         sources,
-                        item["created_at"],
+                        item["created_at"]
                     )
 
                     st.download_button(
@@ -676,56 +697,65 @@ elif page == "Research History":
                         file_name=f"Research_{item['id']}.pdf",
                         mime="application/pdf",
                         key=f"pdf_{item['id']}",
-                        use_container_width=True,
+                        use_container_width=True
                     )
 
                 if st.button(
                     "🗑️ Delete Report",
-                    key=f"delete_{item['id']}",
+                    key=f"delete_{item['id']}"
                 ):
+
                     delete_report(item["id"])
                     st.rerun()
 
 
-# =========================================================
+# =====================================================
 # ABOUT
-# =========================================================
+# =====================================================
 
 elif page == "About ResearchOS":
 
     st.subheader("About ResearchOS")
 
     st.markdown("""
-    **ResearchOS** is an AI-powered research assistant
-    designed to help users explore topics, understand
-    concepts, and generate structured research reports.
+## 🔬 ResearchOS
 
-    ### Features
+ResearchOS is an AI-powered research assistant
+designed to help users explore topics, understand
+concepts, and generate structured research reports.
 
-    - Gemini AI research generation
-    - Google Search grounding
-    - Structured research reports
-    - Persistent SQLite research history
-    - PDF report export
-    - Markdown report export
+### Features
 
-    ### Technology Stack
+- Gemini AI research generation
+- Structured research reports
+- Persistent SQLite research history
+- PDF report export
+- Markdown report export
 
-    - Python
-    - Streamlit
-    - Google Gemini API
-    - Google Search grounding
-    - SQLite
-    - ReportLab
-    """)
+### Technology Stack
+
+- Python
+- Streamlit
+- Google Gemini API
+- SQLite
+- ReportLab
+
+### Search Capability
+
+Live Google Search grounding is disabled in this
+version. Reports are generated using the model's
+learned knowledge and should be independently
+verified for time-sensitive information.
+""")
 
 
-# =========================================================
+# =====================================================
 # FOOTER
-# =========================================================
+# =====================================================
 
 st.markdown("""
 <div class="footer">
-    RESEARCHOS · AI RESEARCH INTELLIGENCE · BUILT WITH PYTHON
+    RESEARCHOS · AI RESEARCH INTELLIGENCE ·
+    BUILT WITH PYTHON
 </div>
 """, unsafe_allow_html=True)
