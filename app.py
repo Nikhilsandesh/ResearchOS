@@ -1,7 +1,7 @@
 
 import os
-import re
 import io
+import re
 import sqlite3
 from datetime import datetime
 from xml.sax.saxutils import escape
@@ -9,20 +9,20 @@ from xml.sax.saxutils import escape
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 
 
 # =====================================================
-# CONFIGURATION
+# 1. APPLICATION CONFIGURATION
 # =====================================================
 
 st.set_page_config(
-    page_title="ResearchOS",
+    page_title="ResearchOS | AI Research Assistant",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -30,36 +30,55 @@ st.set_page_config(
 
 load_dotenv()
 
-API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-3.8-flash"
 
-DB_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "researchos.db"
-)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "researchos.db")
 
 
 # =====================================================
-# GEMINI CLIENT
+# 2. API KEY CONFIGURATION
+# Streamlit Cloud Secrets + local .env
+# =====================================================
+
+def get_api_key():
+    try:
+        secret_key = st.secrets.get("GEMINI_API_KEY", "")
+        if secret_key:
+            return secret_key
+    except Exception:
+        pass
+
+    return os.getenv("GEMINI_API_KEY", "")
+
+
+API_KEY = get_api_key()
+
+
+# =====================================================
+# 3. GEMINI CLIENT
 # =====================================================
 
 @st.cache_resource
-def get_client(api_key):
+def get_gemini_client(api_key):
     if not api_key:
         return None
+
     return genai.Client(api_key=api_key)
 
 
-client = get_client(API_KEY)
+client = get_gemini_client(API_KEY)
 
 
 # =====================================================
-# DATABASE
+# 4. DATABASE
 # =====================================================
 
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
+def init_database():
+
+    with sqlite3.connect(DB_PATH) as connection:
+
+        connection.execute("""
             CREATE TABLE IF NOT EXISTS reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 topic TEXT NOT NULL,
@@ -68,60 +87,213 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-        conn.commit()
+
+        connection.commit()
 
 
 def save_report(topic, report, sources, created_at):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
+
+    with sqlite3.connect(DB_PATH) as connection:
+
+        connection.execute("""
             INSERT INTO reports
             (topic, report, sources, created_at)
             VALUES (?, ?, ?, ?)
-            """,
-            (topic, report, "\n".join(sources), created_at)
-        )
-        conn.commit()
+        """, (
+            topic,
+            report,
+            "\n".join(sources),
+            created_at
+        ))
+
+        connection.commit()
 
 
 def get_reports():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM reports ORDER BY id DESC"
-        ).fetchall()
+
+    with sqlite3.connect(DB_PATH) as connection:
+
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute("""
+            SELECT *
+            FROM reports
+            ORDER BY id DESC
+        """).fetchall()
 
     return [dict(row) for row in rows]
 
 
 def delete_report(report_id):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
+
+    with sqlite3.connect(DB_PATH) as connection:
+
+        connection.execute(
             "DELETE FROM reports WHERE id = ?",
             (report_id,)
         )
-        conn.commit()
+
+        connection.commit()
 
 
-init_db()
+init_database()
 
 
 # =====================================================
-# PDF GENERATOR
+# 5. GEMINI RESEARCH ENGINE
 # =====================================================
 
-def create_pdf(topic, report, sources, created_at):
+def generate_research(topic, depth, style):
+
+    if client is None:
+        raise RuntimeError(
+            "Gemini API key is missing. "
+            "Configure GEMINI_API_KEY in Streamlit Secrets."
+        )
+
+    depth_instructions = {
+        "Quick Overview": (
+            "Provide a concise overview with the most "
+            "important concepts and examples."
+        ),
+        "Standard Research": (
+            "Provide a detailed explanation with relevant "
+            "examples, analysis and practical applications."
+        ),
+        "Deep Research": (
+            "Provide an extensive, technically detailed "
+            "analysis with comprehensive explanations, "
+            "comparisons and limitations."
+        )
+    }
+
+    style_instructions = {
+        "Professional Academic": (
+            "Use formal academic language and a structured "
+            "professional writing style."
+        ),
+        "Beginner Friendly": (
+            "Use simple English, clear explanations and "
+            "easy-to-understand examples."
+        ),
+        "Technical": (
+            "Use technical terminology, architecture details "
+            "and implementation-oriented explanations."
+        ),
+        "Executive Summary": (
+            "Focus on key findings, implications and "
+            "actionable insights."
+        )
+    }
+
+    prompt = f"""
+You are ResearchOS, an intelligent AI research assistant.
+
+Research topic:
+{topic}
+
+Research depth:
+{depth}
+
+Research style:
+{style}
+
+Depth instructions:
+{depth_instructions[depth]}
+
+Writing instructions:
+{style_instructions[style]}
+
+Create a structured research report containing:
+
+1. Executive Summary
+2. Introduction
+3. Background and Context
+4. Important Concepts
+5. Detailed Analysis
+6. Current Developments
+7. Benefits and Opportunities
+8. Challenges and Limitations
+9. Future Scope
+10. Conclusion
+
+Additional instructions:
+
+- Use Markdown headings.
+- Explain concepts clearly.
+- Include useful examples where appropriate.
+- Avoid unsupported statistics.
+- Do not invent references, citations or URLs.
+- Do not claim to have performed live web searches.
+- Clearly identify information that may require
+  independent verification.
+- Make the report relevant to the selected topic.
+"""
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt
+    )
+
+    if not response.text:
+        raise RuntimeError(
+            "Gemini returned an empty response. Please try again."
+        )
+
+    return response.text, []
+
+
+# =====================================================
+# 6. ERROR HANDLING
+# =====================================================
+
+def show_ai_error(error):
+
+    message = str(error)
+    message_lower = message.lower()
+
+    if "503" in message or "unavailable" in message_lower:
+
+        st.error(
+            "Gemini is temporarily experiencing high demand. "
+            "Please wait a few minutes and try again."
+        )
+
+    elif "429" in message or "resource_exhausted" in message_lower:
+
+        st.error(
+            "Gemini API quota or rate limit reached. "
+            "Check your Google AI Studio project quota "
+            "and try again after it resets."
+        )
+
+    elif "401" in message or "403" in message:
+
+        st.error(
+            "Gemini API authentication failed. "
+            "Check your API key and project access."
+        )
+
+    else:
+
+        st.error(f"Research generation failed: {message}")
+
+
+# =====================================================
+# 7. PDF GENERATOR
+# =====================================================
+
+def create_pdf(topic, report, created_at):
 
     buffer = io.BytesIO()
 
-    doc = SimpleDocTemplate(
+    document = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         rightMargin=18 * mm,
         leftMargin=18 * mm,
         topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        title=topic
+        bottomMargin=18 * mm
     )
 
     styles = getSampleStyleSheet()
@@ -131,7 +303,7 @@ def create_pdf(topic, report, sources, created_at):
         parent=styles["Title"],
         fontSize=22,
         leading=28,
-        textColor=colors.HexColor("#243B80"),
+        textColor=colors.HexColor("#2447A5"),
         alignment=TA_CENTER,
         spaceAfter=18
     )
@@ -173,18 +345,12 @@ def create_pdf(topic, report, sources, created_at):
 
         elif line.startswith("# "):
             story.append(
-                Paragraph(
-                    escape(line[2:]),
-                    heading_style
-                )
+                Paragraph(escape(line[2:]), heading_style)
             )
 
         elif line.startswith("## "):
             story.append(
-                Paragraph(
-                    escape(line[3:]),
-                    heading_style
-                )
+                Paragraph(escape(line[3:]), heading_style)
             )
 
         elif line.startswith("### "):
@@ -204,40 +370,23 @@ def create_pdf(topic, report, sources, created_at):
             )
 
         else:
-            clean_line = re.sub(
+            clean = re.sub(
                 r"\*\*(.*?)\*\*",
                 r"\1",
                 line
             )
 
-            clean_line = re.sub(
+            clean = re.sub(
                 r"\*(.*?)\*",
                 r"\1",
-                clean_line
+                clean
             )
 
             story.append(
-                Paragraph(
-                    escape(clean_line),
-                    body_style
-                )
+                Paragraph(escape(clean), body_style)
             )
 
-    if sources:
-        story.append(Spacer(1, 15))
-        story.append(
-            Paragraph("Sources", heading_style)
-        )
-
-        for index, source in enumerate(sources, 1):
-            story.append(
-                Paragraph(
-                    f"{index}. {escape(source)}",
-                    body_style
-                )
-            )
-
-    doc.build(story)
+    document.build(story)
 
     buffer.seek(0)
 
@@ -245,74 +394,15 @@ def create_pdf(topic, report, sources, created_at):
 
 
 # =====================================================
-# AI RESEARCH GENERATION
-# Google Search grounding disabled
-# =====================================================
-
-def generate_research(topic, depth, style):
-
-    prompt = f"""
-You are ResearchOS, an intelligent AI research assistant.
-
-Research topic:
-{topic}
-
-Research depth:
-{depth}
-
-Writing style:
-{style}
-
-Create a detailed, useful, well-structured research report.
-
-Include these sections:
-
-1. Executive Summary
-2. Introduction
-3. Background and Context
-4. Important Concepts
-5. Detailed Analysis
-6. Current Developments
-7. Benefits and Opportunities
-8. Challenges and Limitations
-9. Future Scope
-10. Conclusion
-
-Instructions:
-
-- Use clear headings and Markdown formatting.
-- Explain difficult concepts in understandable language.
-- Match the selected research depth and writing style.
-- Use factual information.
-- Avoid inventing statistics.
-- Do not invent citations, URLs, or sources.
-- You do not have live web-search access in this version.
-- Mention when information may need current verification.
-"""
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt
-    )
-
-    report_text = response.text or "No report generated."
-
-    return report_text, []
-
-
-# =====================================================
-# SESSION STATE
+# 8. SESSION STATE
 # =====================================================
 
 if "current_report" not in st.session_state:
     st.session_state.current_report = None
 
-if "research_count" not in st.session_state:
-    st.session_state.research_count = 0
-
 
 # =====================================================
-# CUSTOM DESIGN
+# 9. CUSTOM DESIGN
 # =====================================================
 
 st.markdown("""
@@ -347,12 +437,10 @@ section[data-testid="stSidebar"] {
 .hero h1 {
     color: white;
     font-size: 36px;
-    margin-bottom: 5px;
 }
 
 .hero p {
     color: #b9c9e8;
-    font-size: 15px;
 }
 
 .metric-card {
@@ -370,17 +458,11 @@ section[data-testid="stSidebar"] {
 
 .metric-card p {
     color: #a8b8d4;
-    margin-bottom: 0;
 }
 
 div.stButton > button {
     border-radius: 9px;
     border: 1px solid #3a5e9a;
-}
-
-.stDownloadButton button {
-    width: 100%;
-    border-radius: 9px;
 }
 
 .footer {
@@ -395,7 +477,7 @@ div.stButton > button {
 
 
 # =====================================================
-# SIDEBAR
+# 10. SIDEBAR
 # =====================================================
 
 with st.sidebar:
@@ -423,11 +505,11 @@ with st.sidebar:
         st.error("Gemini API key missing")
 
     st.caption(f"Model: {MODEL_NAME}")
-    st.caption("Search grounding: Disabled")
+    st.caption("Live Search: Disabled")
 
 
 # =====================================================
-# HEADER
+# 11. HEADER
 # =====================================================
 
 st.markdown("""
@@ -447,7 +529,7 @@ st.markdown("""
 
 
 # =====================================================
-# RESEARCH WORKSPACE
+# 12. RESEARCH WORKSPACE
 # =====================================================
 
 if page == "Research Workspace":
@@ -474,7 +556,7 @@ if page == "Research Workspace":
         st.markdown("""
         <div class="metric-card">
             <h2>PDF</h2>
-            <p>Exportable Reports</p>
+            <p>Research Export</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -484,13 +566,17 @@ if page == "Research Workspace":
 
     topic = st.text_area(
         "Research topic",
-        placeholder="Example: Agentic AI applications in healthcare",
+        placeholder=(
+            "Example: Agentic AI applications "
+            "in healthcare"
+        ),
         height=100
     )
 
     col1, col2 = st.columns(2)
 
     with col1:
+
         depth = st.selectbox(
             "Research depth",
             [
@@ -502,6 +588,7 @@ if page == "Research Workspace":
         )
 
     with col2:
+
         style = st.selectbox(
             "Report style",
             [
@@ -521,18 +608,21 @@ if page == "Research Workspace":
     if generate_button:
 
         if not API_KEY:
+
             st.error(
                 "GEMINI_API_KEY is missing. "
-                "Add it to your .env file."
+                "Configure it in Streamlit Cloud Secrets "
+                "or your local .env file."
             )
 
         elif not topic.strip():
+
             st.warning("Please enter a research topic.")
 
         else:
 
             with st.spinner(
-                "ResearchOS is researching your topic..."
+                "ResearchOS is analyzing your topic..."
             ):
 
                 try:
@@ -557,17 +647,12 @@ if page == "Research Workspace":
                     st.session_state.current_report = {
                         "topic": topic.strip(),
                         "report": report,
-                        "sources": sources,
                         "created_at": created_at
                     }
 
-                    st.session_state.research_count += 1
-
                 except Exception as error:
 
-                    st.error(
-                        f"Research failed: {error}"
-                    )
+                    show_ai_error(error)
 
     # DISPLAY REPORT
 
@@ -587,10 +672,9 @@ if page == "Research Workspace":
         st.markdown(current["report"])
 
         st.info(
-            "This report was generated from Gemini's "
-            "learned knowledge. Live Google Search is "
-            "disabled, so verify recent developments "
-            "and important facts independently."
+            "This report uses Gemini's learned knowledge. "
+            "Live web search is disabled. Independently "
+            "verify recent developments and important facts."
         )
 
         st.divider()
@@ -602,7 +686,6 @@ if page == "Research Workspace":
             pdf_data = create_pdf(
                 current["topic"],
                 current["report"],
-                current["sources"],
                 current["created_at"]
             )
 
@@ -611,7 +694,7 @@ if page == "Research Workspace":
             with col1:
 
                 st.download_button(
-                    label="📥 Download Markdown",
+                    "📥 Download Markdown",
                     data=current["report"],
                     file_name="ResearchOS_Report.md",
                     mime="text/markdown",
@@ -621,7 +704,7 @@ if page == "Research Workspace":
             with col2:
 
                 st.download_button(
-                    label="📑 Download PDF",
+                    "📑 Download PDF",
                     data=pdf_data,
                     file_name="ResearchOS_Report.pdf",
                     mime="application/pdf",
@@ -630,13 +713,11 @@ if page == "Research Workspace":
 
         except Exception as error:
 
-            st.error(
-                f"PDF generation error: {error}"
-            )
+            st.error(f"PDF generation error: {error}")
 
 
 # =====================================================
-# RESEARCH HISTORY
+# 13. RESEARCH HISTORY
 # =====================================================
 
 elif page == "Research History":
@@ -647,7 +728,7 @@ elif page == "Research History":
 
     if not reports:
 
-        st.info("No research reports saved yet.")
+        st.info("No saved research reports yet.")
 
     else:
 
@@ -662,12 +743,6 @@ elif page == "Research History":
             ):
 
                 st.markdown(item["report"])
-
-                sources = (
-                    item["sources"].splitlines()
-                    if item["sources"]
-                    else []
-                )
 
                 col1, col2 = st.columns(2)
 
@@ -687,7 +762,6 @@ elif page == "Research History":
                     pdf_data = create_pdf(
                         item["topic"],
                         item["report"],
-                        sources,
                         item["created_at"]
                     )
 
@@ -710,7 +784,7 @@ elif page == "Research History":
 
 
 # =====================================================
-# ABOUT
+# 14. ABOUT
 # =====================================================
 
 elif page == "About ResearchOS":
@@ -722,15 +796,15 @@ elif page == "About ResearchOS":
 
 ResearchOS is an AI-powered research assistant
 designed to help users explore topics, understand
-concepts, and generate structured research reports.
+concepts, and generate structured reports.
 
 ### Features
 
 - Gemini AI research generation
 - Structured research reports
-- Persistent SQLite research history
-- PDF report export
-- Markdown report export
+- Research history
+- PDF export
+- Markdown export
 
 ### Technology Stack
 
@@ -743,14 +817,14 @@ concepts, and generate structured research reports.
 ### Search Capability
 
 Live Google Search grounding is disabled in this
-version. Reports are generated using the model's
-learned knowledge and should be independently
-verified for time-sensitive information.
+version. Reports use the model's learned knowledge
+and should be independently verified for current
+information.
 """)
 
 
 # =====================================================
-# FOOTER
+# 15. FOOTER
 # =====================================================
 
 st.markdown("""
